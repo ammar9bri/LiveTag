@@ -73,8 +73,16 @@
 <header>
   <h1>Live<span>Tag</span></h1>
   <div class="tabs"><button id="tabA" class="on">Analyst</button><button id="tabB">Bench</button></div>
-  <div class="status"><div class="dot" id="netDot"></div><span id="netTxt">Not connected</span></div>
+  <div class="status"><div class="dot" id="netDot"></div><span id="netTxt">Not connected</span>
+    <button class="ib" id="btnSet" title="Connection settings">⚙</button></div>
 </header>
+<div class="card hidden" id="setCard" style="position:fixed;top:56px;right:12px;z-index:8;width:360px;box-shadow:0 8px 30px #0008">
+  <h3>Connection settings (optional)</h3>
+  <p class="mut">Only needed if the bench can never connect on a strict network (some stadium / company Wi-Fi). Add a TURN relay server here, on <b>both</b> devices.</p>
+  <input type="text" id="turnUrl" placeholder="turn:server:3478 (comma-separate several)" style="width:100%;margin-bottom:6px">
+  <div class="row"><input type="text" id="turnUser" placeholder="username" style="flex:1"><input type="text" id="turnPass" placeholder="password" style="flex:1"></div>
+  <div class="row" style="margin-top:8px"><button class="b go" id="btnSetSave">Save</button><button class="b" id="btnSetClose">Close</button></div>
+</div>
 
 <!-- ================= ANALYST ================= -->
 <main id="viewA">
@@ -325,7 +333,7 @@ async function startRecording(){
     if(writable){ const d=e.data; writeQ=writeQ.then(()=>writable.write(d)).catch(err=>console.error(err)); }
     else if($('saveFull').checked) memChunks.push(e.data);
   };
-  mainRec.start(2000);
+  mainRec.start(2000); keepAwake();
   recT0=performance.now(); recording=true;
   $('btnRec').textContent='■ Stop recording'; $('btnRec').className='b stop';
   $('timer').classList.add('rec');
@@ -422,37 +430,79 @@ function renderListA(){
 }
 renderListA();
 
+/* ---------- connection helpers (both modes) ---------- */
+const now = () => Date.now();
+const HB_EVERY=4000, HB_DEAD=15000;          // heartbeat: ping every 4 s, link considered dead after 15 s of silence
+function iceServers(){
+  const list=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:stun.cloudflare.com:3478'}];
+  try{ const t=JSON.parse(load('lt_turn','null')); if(t&&t.url) list.push({urls:t.url.split(',').map(x=>x.trim()), username:t.user, credential:t.pass}); }catch(e){}
+  return list;
+}
+const peerOpts = () => ({debug:1, config:{iceServers:iceServers()}});
+let wakeLock=null;
+async function keepAwake(){ try{ if('wakeLock' in navigator && document.visibilityState==='visible' && !wakeLock){ wakeLock=await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release',()=>{wakeLock=null;}); } }catch(e){} }
+
 /* ---------- sharing (analyst = host) ---------- */
-let hostPeer=null; const conns=new Set();
+let hostPeer=null, liveWanted=false, liveCode='', hostOpenedOnce=false; const conns=new Set();
 function newCode(){ const A='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<6;i++) s+=A[Math.floor(Math.random()*A.length)]; return s; }
 $('btnLive').onclick=()=>{
-  if(hostPeer){ hostPeer.destroy(); hostPeer=null; conns.clear(); updCount(); $('btnLive').textContent='Go live'; $('btnLive').className='b go'; $('roomCode').textContent='––––––'; setNet('', 'Not connected'); return; }
-  if(typeof Peer==='undefined') return toast('No internet connection (sharing library did not load)');
-  goLive(load('lt_code','') || newCode());
+  if(liveWanted){
+    liveWanted=false; if(hostPeer) hostPeer.destroy(); hostPeer=null; conns.clear(); updCount();
+    $('btnLive').textContent='Go live'; $('btnLive').className='b go'; $('roomCode').textContent='––––––'; setNet('', 'Not connected'); return;
+  }
+  if(typeof Peer==='undefined') return toast('No internet connection (sharing library did not load) – reload the page');
+  liveWanted=true; hostOpenedOnce=false; liveCode=load('lt_code','')||newCode();
+  $('btnLive').textContent='Stop sharing'; $('btnLive').className='b stop';
+  keepAwake(); goLive();
 };
-function goLive(code){
+function goLive(){
+  if(!liveWanted) return;
+  if(hostPeer && !hostPeer.destroyed) hostPeer.destroy();
   setNet('wait','Going live…');
-  hostPeer=new Peer(PEER_PREFIX+code, {debug:1});
-  hostPeer.on('open',()=>{ save('lt_code',code); $('roomCode').textContent=code; setNet('ok','Live – waiting for bench'); $('btnLive').textContent='Stop sharing'; $('btnLive').className='b stop'; });
-  hostPeer.on('error',err=>{
-    console.warn(err);
-    if(err.type==='unavailable-id'){ hostPeer.destroy(); hostPeer=null; goLive(newCode()); return; }
-    if(err.type==='network'||err.type==='server-error'||err.type==='socket-error') setNet('bad','Internet problem – retrying');
+  const p=hostPeer=new Peer(PEER_PREFIX+liveCode, peerOpts());
+  p._born=now();
+  p.on('open',()=>{ if(p!==hostPeer) return; hostOpenedOnce=true; save('lt_code',liveCode); $('roomCode').textContent=liveCode; updCount(); });
+  p.on('error',err=>{
+    if(p!==hostPeer) return; console.warn('host',err.type,err);
+    if(err.type==='unavailable-id'){
+      // code still held by the server from our previous session: keep the SAME code and retry (bench keeps working)
+      if(hostOpenedOnce || load('lt_code','')===liveCode){ setNet('wait','Re-joining with code '+liveCode+'…'); p._retryAt=now()+5000; p.destroy(); }
+      else { liveCode=newCode(); goLive(); }
+      return;
+    }
+    if(['network','server-error','socket-error','socket-closed'].includes(err.type)) setNet('bad','Internet problem – retrying');
   });
-  hostPeer.on('disconnected',()=>{ setNet('wait','Reconnecting…'); setTimeout(()=>hostPeer && !hostPeer.destroyed && hostPeer.reconnect(),2000); });
-  hostPeer.on('connection',conn=>{
+  p.on('disconnected',()=>{ if(p===hostPeer && liveWanted) setNet('wait','Internet lost – reconnecting…'); });
+  p.on('connection',conn=>{
+    conn._seen=now();
     conn.on('open',()=>{
-      conns.add(conn); updCount(); toast('Bench device connected');
+      conn._seen=now(); conns.add(conn); updCount(); toast('Bench device connected');
       conn.send({type:'hello', tags:tags.map(meta), defs:tagDefs});
     });
-    conn.on('data',async d=>{
+    conn.on('data',d=>{
+      conn._seen=now();
       if(d && d.type==='getClip' && clips[d.id]) sendClip(conn,d.id);
     });
-    conn.on('close',()=>{ conns.delete(conn); updCount(); });
-    conn.on('error',()=>{ conns.delete(conn); updCount(); });
+    const drop=()=>{ if(conns.delete(conn)) updCount(); };
+    conn.on('close',drop); conn.on('error',drop);
   });
 }
-function updCount(){ $('benchCount').textContent='Bench devices: '+conns.size; if(hostPeer&&hostPeer.open) setNet('ok', conns.size? `Live – ${conns.size} bench device(s)` : 'Live – waiting for bench'); }
+// host watchdog: keep the code registered and drop dead bench links
+setInterval(()=>{
+  if(!liveWanted) return;
+  const p=hostPeer;
+  if(!p || p.destroyed){ if(!p || !p._retryAt || now()>=p._retryAt) goLive(); }
+  else if(p.disconnected){ try{ p.reconnect(); }catch(e){} if(now()-(p._lostAt||(p._lostAt=now()))>20000){ p._lostAt=0; goLive(); } }
+  else { p._lostAt=0; if(!p.open && now()-p._born>20000) goLive(); }
+  conns.forEach(c=>{
+    if(now()-c._seen>HB_DEAD){ conns.delete(c); try{ c.close(); }catch(e){} updCount(); }
+    else { try{ c.open && c.send({type:'ping'}); }catch(e){} }
+  });
+}, HB_EVERY);
+function updCount(){
+  $('benchCount').textContent='Bench devices: '+conns.size;
+  if(hostPeer&&hostPeer.open) setNet('ok', conns.size? `Live – ${conns.size} bench device(s)` : 'Live – waiting for bench');
+}
 $('btnCopy').onclick=()=>{ navigator.clipboard.writeText($('roomCode').textContent); toast('Code copied'); };
 function broadcast(msg){ conns.forEach(c=>{ try{ c.open && c.send(msg); }catch(e){} }); }
 function shareTag(id, manual){
@@ -480,42 +530,84 @@ function sendClip(conn,id){
 }
 
 /* ======================== BENCH ======================== */
-let benchPeer=null, benchConn=null, benchCode='', wantConnected=false;
+let benchPeer=null, benchConn=null, benchCode='', wantConnected=false, dialAt=0, nextDialAt=0, fails=0, bSeen=0;
 const bTags=[]; const bClips={}; const incoming={};
 let filter=null, curId=null, stopAt=null;
 
 $('codeIn').value=load('lt_bcode','');
 $('btnJoin').onclick=()=>{
-  if(wantConnected){ wantConnected=false; benchConn&&benchConn.close(); benchPeer&&benchPeer.destroy(); benchPeer=null; setNet('','Not connected'); $('btnJoin').textContent='Connect'; $('btnJoin').className='b go'; return; }
+  if(wantConnected){
+    wantConnected=false; closeBenchConn(); if(benchPeer) benchPeer.destroy(); benchPeer=null;
+    setNet('','Not connected'); $('btnJoin').textContent='Connect'; $('btnJoin').className='b go'; return;
+  }
   const code=$('codeIn').value.trim().toUpperCase(); if(code.length<6) return toast('Enter the 6-letter code');
-  if(typeof Peer==='undefined') return toast('No internet connection (sharing library did not load)');
-  benchCode=code; save('lt_bcode',code); wantConnected=true;
+  if(typeof Peer==='undefined') return toast('No internet connection (sharing library did not load) – reload the page');
+  benchCode=code; save('lt_bcode',code); wantConnected=true; fails=0; nextDialAt=0;
   $('btnJoin').textContent='Disconnect'; $('btnJoin').className='b stop';
-  benchConnect();
+  closeBenchConn(); if(benchPeer) benchPeer.destroy(); benchPeer=null;
+  keepAwake(); benchTick();
 };
-function benchConnect(){
-  if(!wantConnected) return;
-  setNet('wait','Connecting…');
-  if(!benchPeer || benchPeer.destroyed){
-    benchPeer=new Peer({debug:1});
-    benchPeer.on('open',()=>dial());
-    benchPeer.on('error',err=>{ console.warn(err); if(err.type==='peer-unavailable') setNet('bad','Analyst not live – retrying'); else setNet('bad','Connection problem – retrying'); setTimeout(()=>{ if(wantConnected && !(benchConn&&benchConn.open)) dial(); },4000); });
-    benchPeer.on('disconnected',()=>{ setTimeout(()=>benchPeer && !benchPeer.destroyed && benchPeer.reconnect(),2000); });
-  } else dial();
+function closeBenchConn(){
+  const c=benchConn; benchConn=null;
+  if(c){ try{ c.close(); }catch(e){} }
+  for(const k in incoming) delete incoming[k];     // half-received clips will be requested again
+  renderListB();
+}
+function makeBenchPeer(){
+  if(benchPeer && !benchPeer.destroyed) benchPeer.destroy();
+  const p=benchPeer=new Peer(peerOpts()); p._born=now();
+  setNet('wait','Connecting to internet service…');
+  p.on('open',()=>{ if(p===benchPeer) benchTick(); });
+  p.on('error',err=>{
+    if(p!==benchPeer) return; console.warn('bench',err.type,err);
+    if(err.type==='peer-unavailable'){ setNet('bad','Analyst not live / wrong code – retrying'); closeBenchConn(); nextDialAt=now()+3000; }
+    else setNet('bad','Connection problem – retrying');
+  });
 }
 function dial(){
-  if(!wantConnected || !benchPeer || !benchPeer.open) return;
-  if(benchConn && benchConn.open) return;
-  benchConn=benchPeer.connect(PEER_PREFIX+benchCode,{reliable:true});
-  benchConn.on('open',()=>{ setNet('ok','Connected to analyst'); toast('Connected'); });
-  benchConn.on('data',onBenchData);
-  benchConn.on('close',()=>{ if(wantConnected){ setNet('wait','Lost connection – retrying'); setTimeout(dial,3000);} });
+  setNet('wait', fails? `Reconnecting to analyst… (try ${fails+1})` : 'Connecting to analyst…');
+  const c=benchConn=benchPeer.connect(PEER_PREFIX+benchCode,{reliable:true});
+  dialAt=now();
+  c.on('open',()=>{ if(c!==benchConn) return; bSeen=now(); fails=0; setNet('ok','Connected to analyst'); toast('Connected'); });
+  c.on('data',d=>{ if(c!==benchConn) return; bSeen=now(); if(d && d.type!=='ping') onBenchData(d); });
+  c.on('close',()=>{ if(c===benchConn){ closeBenchConn(); if(wantConnected) setNet('wait','Lost connection – reconnecting…'); nextDialAt=now()+1000; } });
+  c.on('error',()=>{ if(c===benchConn){ closeBenchConn(); nextDialAt=now()+2000; } });
+}
+// bench watchdog: never stays stuck – every attempt has a time limit, then starts fresh
+function benchTick(){
+  if(!wantConnected) return;
+  const p=benchPeer;
+  if(!p || p.destroyed){ makeBenchPeer(); return; }
+  if(p.disconnected){ try{ p.reconnect(); }catch(e){} if(now()-(p._lostAt||(p._lostAt=now()))>10000) makeBenchPeer(); return; }
+  p._lostAt=0;
+  if(!p.open){ if(now()-p._born>15000) makeBenchPeer(); return; }
+  if(benchConn && benchConn.open){
+    if(now()-bSeen>HB_DEAD){ setNet('wait','Link lost – reconnecting…'); closeBenchConn(); nextDialAt=0; }
+    else { try{ benchConn.send({type:'ping'}); }catch(e){} }
+    return;
+  }
+  if(benchConn){                                   // attempt in progress
+    if(now()-dialAt<10000) return;
+    closeBenchConn(); fails++;                      // stuck attempt: give up on it
+    if(fails%2===0){ makeBenchPeer(); return; }     // every 2nd failure: completely fresh start
+  }
+  if(now()>=nextDialAt) dial();
+}
+setInterval(benchTick, 2000);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState!=='visible') return;
+  keepAwake();
+  if(wantConnected){ if(benchConn && benchConn.open && now()-bSeen>6000) closeBenchConn(); nextDialAt=0; benchTick(); }
+});
+function requestMissing(){
+  if(!(benchConn&&benchConn.open)) return;
+  bTags.filter(t=>t.ready && !t.have && !incoming[t.id]).forEach(t=>benchConn.send({type:'getClip', id:t.id}));
 }
 function onBenchData(d){
   if(!d||!d.type) return;
   if(d.type==='hello'){
-    d.tags.forEach(t=>{ if(!bTags.find(x=>x.id===t.id)) bTags.push({...t, have:false}); });
-    renderListB();
+    d.tags.forEach(t=>{ const x=bTags.find(y=>y.id===t.id); if(!x) bTags.push({...t, have:false}); else x.ready=t.ready; });
+    renderListB(); requestMissing();
   }
   else if(d.type==='tag'){
     let t=bTags.find(x=>x.id===d.tag.id);
@@ -588,6 +680,11 @@ $('csvB').onclick=()=>download(csv(bTags),'tags_bench.csv');
 window.addEventListener('beforeunload',e=>{ if(recording){ e.preventDefault(); e.returnValue=''; } });
 
 setMode(load('lt_mode','A'));
+(function(){ let t={}; try{ t=JSON.parse(load('lt_turn','{}'))||{}; }catch(e){}
+  $('turnUrl').value=t.url||''; $('turnUser').value=t.user||''; $('turnPass').value=t.pass||''; })();
+$('btnSet').onclick=()=>$('setCard').classList.toggle('hidden');
+$('btnSetClose').onclick=()=>$('setCard').classList.add('hidden');
+$('btnSetSave').onclick=()=>{ save('lt_turn',JSON.stringify({url:$('turnUrl').value.trim(),user:$('turnUser').value.trim(),pass:$('turnPass').value})); $('setCard').classList.add('hidden'); toast('Saved – applies to the next connection'); };
 $('clipQ').value=load('lt_q','2000000'); $('clipQ').onchange=()=>save('lt_q',$('clipQ').value);
 renderListB();
 (async()=>{ try{ await listDevices(); }catch(e){} })();

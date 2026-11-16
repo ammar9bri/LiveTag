@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LiveTag – Live Match Capture & Tag Sharing</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  :root{--bg:#0f1216;--panel:#171b21;--panel2:#1f242c;--line:#2a313b;--txt:#e8ecf1;--mut:#8b96a5;--acc:#2fbf71;--red:#e5484d;--amber:#f5a524;--blue:#3e8ef7}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--txt);font-size:14px}
+  header{display:flex;align-items:center;gap:16px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+  header h1{font-size:17px;margin:0;font-weight:700;letter-spacing:.3px}
+  header h1 span{color:var(--acc)}
+  .tabs{display:flex;background:var(--panel2);border-radius:8px;padding:3px}
+  .tabs button{background:none;border:0;color:var(--mut);padding:7px 16px;border-radius:6px;cursor:pointer;font-weight:600}
+  .tabs button.on{background:var(--acc);color:#04170c}
+  .status{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--mut)}
+  .dot{width:10px;height:10px;border-radius:50%;background:#555}
+  .dot.ok{background:var(--acc)} .dot.wait{background:var(--amber)} .dot.bad{background:var(--red)}
+  main{display:grid;grid-template-columns:1fr 420px;gap:12px;padding:12px;height:calc(100vh - 53px)}
+  .col{display:flex;flex-direction:column;gap:12px;min-height:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .card h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--mut)}
+  video{width:100%;background:#000;border-radius:8px;aspect-ratio:16/9;display:block}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  select,input[type=text],input[type=number]{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:7px 8px;font-size:13px}
+  input[type=number]{width:62px}
+  button.b{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:8px 12px;cursor:pointer;font-weight:600}
+  button.b:hover{border-color:#44505f}
+  button.b.go{background:var(--acc);color:#04170c;border-color:var(--acc)}
+  button.b.stop{background:var(--red);border-color:var(--red)}
+  button.b:disabled{opacity:.4;cursor:not-allowed}
+  .timer{font-variant-numeric:tabular-nums;font-size:26px;font-weight:700;min-width:110px}
+  .rec{color:var(--red)}
+  .code{font-size:28px;font-weight:800;letter-spacing:6px;color:var(--acc);font-variant-numeric:tabular-nums}
+  .mut{color:var(--mut);font-size:12px}
+  .tagGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .tagBtn{position:relative;padding:16px 6px;border-radius:8px;border:0;color:#fff;font-weight:700;font-size:13px;cursor:pointer;transition:transform .05s}
+  .tagBtn:active,.tagBtn.flash{transform:scale(.95);filter:brightness(1.4)}
+  .tagBtn kbd{position:absolute;top:4px;right:6px;font-size:10px;opacity:.75;font-family:inherit}
+  .list{flex:1;overflow:auto;min-height:120px;padding:0}
+  .list .item{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer}
+  .list .item:hover{background:var(--panel2)}
+  .list .item.sel{background:#1d2b23}
+  .sw{width:10px;height:28px;border-radius:3px;flex:none}
+  .item .t{font-variant-numeric:tabular-nums;color:var(--mut);width:52px}
+  .item .n{flex:1;font-weight:600}
+  .pill{font-size:11px;padding:2px 7px;border-radius:10px;background:var(--panel2);color:var(--mut);white-space:nowrap}
+  .pill.ok{background:#173d29;color:#7ee2a8} .pill.wait{background:#3d3217;color:#f5c66a} .pill.sent{background:#17283d;color:#86b7ff}
+  .ib{background:none;border:0;color:var(--mut);cursor:pointer;font-size:15px;padding:2px 4px}
+  .ib:hover{color:var(--txt)}
+  .hidden{display:none!important}
+  textarea{width:100%;height:150px;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:8px}
+  details summary{cursor:pointer;color:var(--mut);font-size:12px}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#222a33;border:1px solid var(--line);padding:10px 16px;border-radius:8px;opacity:0;transition:.25s;pointer-events:none;z-index:9}
+  .toast.on{opacity:1}
+  .filters{display:flex;gap:6px;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid var(--line)}
+  .filters button{font-size:11px;padding:4px 8px;border-radius:12px;border:1px solid var(--line);background:none;color:var(--mut);cursor:pointer}
+  .filters button.on{color:#fff;border-color:#fff}
+  .now{font-weight:700;font-size:15px;margin-top:8px;min-height:20px}
+  table.ed{width:100%;border-collapse:collapse;margin-top:8px}
+  table.ed th{font-size:11px;color:var(--mut);text-align:left;font-weight:600;padding:2px}
+  table.ed td{padding:2px}
+  table.ed input{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:5px;padding:5px;font-size:12px}
+  table.ed input[type=color]{padding:1px;height:28px;width:36px}
+  table.ed .k{width:38px;text-align:center;text-transform:uppercase}
+  table.ed .s{width:52px}
+  .tagBtn small{display:block;font-weight:500;font-size:10px;opacity:.85;margin-top:3px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Live<span>Tag</span></h1>
+  <div class="tabs"><button id="tabA" class="on">Analyst</button><button id="tabB">Bench</button></div>
+  <div class="status"><div class="dot" id="netDot"></div><span id="netTxt">Not connected</span></div>
+</header>
+
+<!-- ================= ANALYST ================= -->
+<main id="viewA">
+  <div class="col">
+    <div class="card">
+      <video id="live" autoplay muted playsinline></video>
+      <div class="row" style="margin-top:10px">
+        <select id="camSel" title="Video source (capture card)"></select>
+        <select id="micSel" title="Audio source"></select>
+        <button class="b" id="btnCam">Open camera</button>
+        <span class="mut" id="camInfo"></span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <button class="b go" id="btnRec" disabled>● Start recording</button>
+        <div class="timer" id="timer">00:00</div>
+        <label class="row mut"><input type="checkbox" id="saveFull" checked> Save full match to disk</label>
+        <span class="pill ok" id="bufInfo" title="Instant replay buffer">Replay buffer: off</span>
+        <label class="mut">Clip quality <select id="clipQ" title="Lower = smaller clips = faster sending">
+          <option value="1000000">Fast send (smaller)</option><option value="2000000" selected>Normal</option><option value="4000000">High (bigger)</option></select></label>
+      </div>
+      <div class="mut" id="recInfo" style="margin-top:6px"></div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="card">
+      <h3>Share with bench</h3>
+      <div class="row">
+        <button class="b go" id="btnLive">Go live</button>
+        <div class="code" id="roomCode">––––––</div>
+        <button class="ib" id="btnCopy" title="Copy code">⧉</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <span class="mut" id="benchCount">Bench devices: 0</span>
+        <label class="row mut" style="margin-left:auto"><input type="checkbox" id="autoSend" checked> Send every tag automatically</label>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Tags <span class="mut" style="text-transform:none;letter-spacing:0">(keyboard keys shown)</span></h3>
+      <div class="tagGrid" id="tagGrid"></div>
+      <details style="margin-top:10px" id="tagEditBox"><summary>Edit tag buttons</summary>
+        <table class="ed"><thead><tr><th>Name</th><th>Key</th><th>Colour</th><th title="Seconds before the press">Before s</th><th title="Seconds after the press (0 = send instantly)">After s</th><th></th></tr></thead><tbody id="edRows"></tbody></table>
+        <div class="row" style="margin-top:6px">
+          <button class="b" id="btnAddRow">+ Add button</button>
+          <button class="b go" id="btnTagSave">Save buttons</button>
+          <button class="b" id="btnTagReset" style="margin-left:auto">Reset</button>
+        </div>
+        <p class="mut">"Before" = how many seconds back the clip starts (max 60). "After" = extra seconds after you press; keep it 0 for instant sending.</p>
+      </details>
+    </div>
+    <div class="card list" id="listA"></div>
+    <div class="row"><button class="b" id="csvA">Export tags (CSV)</button></div>
+  </div>
+</main>
+
+<!-- ================= BENCH ================= -->
+<main id="viewB" class="hidden">
+  <div class="col">
+    <div class="card">
+      <video id="player" controls playsinline></video>
+      <div class="now" id="nowPlaying"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="b" id="btnReplay" disabled>↺ Replay</button>
+        <button class="b" id="btnPrev">◀ Previous</button>
+        <button class="b" id="btnNext">Next ▶</button>
+        <label class="row mut"><input type="checkbox" id="autoPlay" checked> Auto-play new clips</label>
+        <button class="b" id="btnDl" disabled style="margin-left:auto">⬇ Download clip</button>
+      </div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="card">
+      <h3>Connect to analyst</h3>
+      <div class="row">
+        <input type="text" id="codeIn" placeholder="CODE" maxlength="6" style="width:130px;font-size:20px;letter-spacing:4px;text-transform:uppercase">
+        <button class="b go" id="btnJoin">Connect</button>
+      </div>
+      <div class="mut" style="margin-top:6px">Type the 6-letter code shown on the analyst's screen.</div>
+    </div>
+    <div class="card list" id="listB" style="padding:0">
+      <div class="filters" id="filtB"></div>
+      <div id="itemsB"></div>
+    </div>
+    <div class="row"><button class="b" id="csvB">Export tags (CSV)</button></div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ======================== helpers ======================== */
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const fmt = s => { s = Math.max(0, Math.floor(s)); const m = Math.floor(s/60); return String(m).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); };
+const uid = () => Math.random().toString(36).slice(2,10);
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('on'); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('on'),2200); }
+function setNet(state, txt){ $('netDot').className='dot '+state; $('netTxt').textContent=txt; }
+const PEER_PREFIX = 'livetag-qa-';
+const CHUNK = 15*1024;
+
+const DEFAULT_TAGS = [
+  {name:'Goal',key:'1',color:'#2fbf71',pre:30,post:0},
+  {name:'Shot',key:'2',color:'#3e8ef7',pre:15,post:0},
+  {name:'Chance',key:'3',color:'#6c5ce7',pre:20,post:0},
+  {name:'Corner',key:'4',color:'#00a8a8',pre:15,post:0},
+  {name:'Free kick',key:'5',color:'#0984e3',pre:15,post:0},
+  {name:'Attack',key:'6',color:'#1e9e5a',pre:20,post:0},
+  {name:'Counter attack',key:'7',color:'#f5a524',pre:20,post:0},
+  {name:'Ball recovery',key:'8',color:'#8e7d2b',pre:10,post:0},
+  {name:'Ball loss',key:'9',color:'#e17055',pre:10,post:0},
+  {name:'Defensive error',key:'0',color:'#e5484d',pre:20,post:0},
+  {name:'Set piece against',key:'q',color:'#a53a7a',pre:20,post:0},
+  {name:'Highlight',key:'w',color:'#636e72',pre:15,post:0}
+];
+const MAX_PRE=60, MAX_POST=30;
+function cleanTags(list){
+  return (list||[]).map(t=>({
+    name:String(t.name||'').trim(), key:String(t.key||'').trim().toLowerCase().slice(0,1),
+    color:/^#[0-9a-f]{6}$/i.test(t.color)?t.color:'#555555',
+    pre:Math.min(MAX_PRE,Math.max(1,Math.round(+t.pre||15))), post:Math.min(MAX_POST,Math.max(0,Math.round(+t.post||0)))
+  })).filter(t=>t.name);
+}
+function loadTags(){ try{ const v=JSON.parse(load('lt_tags2','null')); if(Array.isArray(v)&&v.length) return cleanTags(v); }catch(e){} return cleanTags(DEFAULT_TAGS); }
+function load(k,d){ try{ const v=localStorage.getItem(k); return v==null?d:v; }catch(e){ return d; } }
+function save(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+
+/* ======================== tabs ======================== */
+let mode = 'A';
+function setMode(m){
+  mode = m;
+  $('viewA').classList.toggle('hidden', m!=='A');
+  $('viewB').classList.toggle('hidden', m!=='B');
+  $('tabA').classList.toggle('on', m==='A');
+  $('tabB').classList.toggle('on', m==='B');
+  save('lt_mode', m);
+}
+$('tabA').onclick = ()=>setMode('A');
+$('tabB').onclick = ()=>setMode('B');
+
+/* ======================== ANALYST ======================== */
+let tagDefs = loadTags();
+let stream=null, clipStream=null, mime='', ext='webm';
+let mainRec=null, writable=null, writeQ=Promise.resolve(), memChunks=[];
+let recT0=0, recording=false, timerInt=null, cycleInt=null;
+let clipRecs=[];          // rolling clip recorders
+const tags=[];            // {id,name,color,t,ready,sent}
+const clips={};           // id -> {blob,inPt,outPt,mime,ext}
+const PERIOD=10;          // a new replay-buffer recorder starts every 10 s
+
+function pickMime(){
+  const list=['video/mp4;codecs=avc1.640028,mp4a.40.2','video/mp4;codecs=avc1,mp4a.40.2','video/mp4',
+              'video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  for(const m of list) if(window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  return '';
+}
+const recNow = () => recording ? (performance.now()-recT0)/1000 : 0;
+
+function renderTagGrid(){
+  const g=$('tagGrid'); g.innerHTML='';
+  tagDefs.forEach(td=>{
+    const b=document.createElement('button');
+    b.className='tagBtn'; b.style.background=td.color; b.dataset.name=td.name;
+    b.innerHTML=`${td.name}${td.key?`<kbd>${td.key.toUpperCase()}</kbd>`:''}<small>last ${td.pre}s${td.post?` +${td.post}s`:''}</small>`;
+    b.onclick=()=>addTag(td, b);
+    g.appendChild(b);
+  });
+}
+const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function edRow(t){
+  const tr=document.createElement('tr');
+  tr.innerHTML=`<td><input class="n" value="${esc(t.name)}"></td><td><input class="k" maxlength="1" value="${esc(t.key)}"></td>
+    <td><input type="color" class="c" value="${t.color}"></td><td><input type="number" class="s pre" min="1" max="${MAX_PRE}" value="${t.pre}"></td>
+    <td><input type="number" class="s post" min="0" max="${MAX_POST}" value="${t.post}"></td><td><button class="ib" title="Remove">✕</button></td>`;
+  tr.querySelector('button').onclick=()=>tr.remove();
+  return tr;
+}
+function renderEditor(list){ const b=$('edRows'); b.innerHTML=''; list.forEach(t=>b.appendChild(edRow(t))); }
+$('btnAddRow').onclick=()=>$('edRows').appendChild(edRow({name:'New tag',key:'',color:'#3e8ef7',pre:15,post:0}));
+$('btnTagSave').onclick=()=>{
+  const list=cleanTags([...$('edRows').children].map(tr=>({name:tr.querySelector('.n').value,key:tr.querySelector('.k').value,color:tr.querySelector('.c').value,pre:tr.querySelector('.pre').value,post:tr.querySelector('.post').value})));
+  if(!list.length) return toast('Add at least one button');
+  const keys=list.map(t=>t.key).filter(Boolean); if(new Set(keys).size!==keys.length) return toast('Two buttons use the same key');
+  tagDefs=list; save('lt_tags2',JSON.stringify(list)); renderTagGrid(); renderEditor(list); updBufInfo();
+  broadcast({type:'defs', defs:tagDefs}); toast('Buttons saved');
+};
+$('btnTagReset').onclick=()=>renderEditor(cleanTags(DEFAULT_TAGS));
+renderTagGrid(); renderEditor(tagDefs);
+
+document.addEventListener('keydown',e=>{
+  if(mode!=='A' || e.metaKey || e.ctrlKey || e.altKey) return;
+  if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) return;
+  const td=tagDefs.find(t=>t.key && t.key===e.key.toLowerCase());
+  if(td){ e.preventDefault(); const btn=[...$('tagGrid').children].find(b=>b.dataset.name===td.name); addTag(td, btn); }
+});
+
+async function listDevices(){
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const cams=devs.filter(d=>d.kind==='videoinput'), mics=devs.filter(d=>d.kind==='audioinput');
+  const cs=$('camSel'), ms=$('micSel'); const cv=cs.value, mv=ms.value;
+  cs.innerHTML=cams.map((d,i)=>`<option value="${d.deviceId}">${d.label||'Camera '+(i+1)}</option>`).join('');
+  ms.innerHTML='<option value="">No audio</option>'+mics.map((d,i)=>`<option value="${d.deviceId}">${d.label||'Mic '+(i+1)}</option>`).join('');
+  if(cv) cs.value=cv; else { const cap=cams.find(d=>/cam ?link|capture|elgato|hdmi|usb video|uvc/i.test(d.label)); if(cap) cs.value=cap.deviceId; }
+  if(mv) ms.value=mv;
+}
+navigator.mediaDevices?.addEventListener?.('devicechange', listDevices);
+
+$('btnCam').onclick = async ()=>{
+  if(recording) return toast('Stop recording first');
+  try{
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    const vId=$('camSel').value, aId=$('micSel').value;
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: vId?{exact:vId}:undefined, width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:30} },
+      audio: aId ? { deviceId:{exact:aId}, echoCancellation:false, noiseSuppression:false, autoGainControl:false } : false
+    });
+    $('live').srcObject=stream;
+    await listDevices();
+    const s=stream.getVideoTracks()[0].getSettings();
+    $('camInfo').textContent=`${s.width}×${s.height} @ ${Math.round(s.frameRate||0)}fps`;
+    // lighter stream for clips (720p) so clips stay small for sending
+    const vt=stream.getVideoTracks()[0].clone();
+    try{ if((s.height||0)>720) await vt.applyConstraints({width:1280,height:720}); }catch(e){}
+    clipStream=new MediaStream([vt, ...stream.getAudioTracks()]);
+    mime=pickMime(); ext=mime.includes('mp4')?'mp4':'webm';
+    if(!mime){ toast('This browser cannot record video. Use Google Chrome.'); return; }
+    $('btnRec').disabled=false;
+    $('recInfo').textContent=`Recording format: ${mime.split(';')[0]}`;
+  }catch(err){ toast('Camera error: '+err.message); console.error(err); }
+};
+
+$('btnRec').onclick = ()=> recording ? stopRecording() : startRecording();
+
+async function startRecording(){
+  if(!stream) return;
+  writable=null; memChunks=[]; writeQ=Promise.resolve();
+  if($('saveFull').checked && window.showSaveFilePicker){
+    try{
+      const d=new Date(), name=`Match_${d.toISOString().slice(0,16).replace(/[:T]/g,'-')}.${ext}`;
+      const h=await showSaveFilePicker({suggestedName:name, types:[{description:'Video',accept:{[mime.split(';')[0]]:['.'+ext]}}]});
+      writable=await h.createWritable();
+    }catch(e){ if(e.name==='AbortError') return; console.warn(e); }
+  }
+  mainRec=new MediaRecorder(stream,{mimeType:mime, videoBitsPerSecond:8e6, audioBitsPerSecond:128000});
+  mainRec.ondataavailable=e=>{
+    if(!e.data.size) return;
+    if(writable){ const d=e.data; writeQ=writeQ.then(()=>writable.write(d)).catch(err=>console.error(err)); }
+    else if($('saveFull').checked) memChunks.push(e.data);
+  };
+  mainRec.start(2000);
+  recT0=performance.now(); recording=true;
+  $('btnRec').textContent='■ Stop recording'; $('btnRec').className='b stop';
+  $('timer').classList.add('rec');
+  timerInt=setInterval(()=>$('timer').textContent=fmt(recNow()),250);
+  spawnClipRec(); cycleInt=setInterval(spawnClipRec, PERIOD*1000); updBufInfo();
+  $('recInfo').textContent = writable ? 'Full match is being written to disk as you record.' :
+     ($('saveFull').checked ? 'Full match kept in memory and downloaded when you stop.' : 'Full match is not saved (clips only).');
+}
+
+async function stopRecording(){
+  recording=false;
+  clearInterval(timerInt); clearInterval(cycleInt);
+  $('timer').classList.remove('rec');
+  $('btnRec').textContent='● Start recording'; $('btnRec').className='b go'; updBufInfo();
+  clipRecs.slice().forEach(r=>{ clearTimeout(r.timer); if(r.rec.state!=='inactive') r.rec.stop(); });
+  await new Promise(res=>{ mainRec.onstop=res; mainRec.stop(); });
+  if(writable){ await writeQ; await writable.close(); writable=null; toast('Full match saved'); }
+  else if(memChunks.length){ download(new Blob(memChunks,{type:mime}), `Match.${ext}`); memChunks=[]; }
+}
+
+/* ===== Instant replay buffer =====
+   Several overlapping background recorders run all the time (a new one every PERIOD s, each living
+   longest-"before" + PERIOD s). Everything a recorder has produced so far is already a playable file,
+   so when a tag is pressed we flush the right recorder and cut immediately — no waiting. */
+const maxPre = () => Math.max(...tagDefs.map(t=>t.pre), 5);
+const bufLife = () => maxPre() + PERIOD + 3;
+function updBufInfo(){
+  $('bufInfo').textContent = recording ? `Replay buffer: ON · up to ${maxPre()}s back` : `Replay buffer: off (starts with recording)`;
+  $('bufInfo').className = 'pill '+(recording?'ok':'');
+}
+updBufInfo();
+function spawnClipRec(){
+  if(!recording) return;
+  const rec=new MediaRecorder(clipStream,{mimeType:mime, videoBitsPerSecond:+$('clipQ').value, audioBitsPerSecond:96000});
+  const r={rec, start:recNow(), chunks:[], flushWaiters:[], done:false};
+  rec.onstart=()=>{ r.start=recNow(); };
+  rec.ondataavailable=e=>{ if(e.data.size) r.chunks.push(e.data); const w=r.flushWaiters; r.flushWaiters=[]; w.forEach(f=>f()); };
+  rec.onstop=()=>{ r.done=true; clipRecs=clipRecs.filter(x=>x!==r); setTimeout(()=>{ r.chunks=[]; },1000); };
+  rec.start(1000);
+  r.timer=setTimeout(()=>{ if(rec.state!=='inactive') rec.stop(); }, bufLife()*1000);
+  clipRecs.push(r);
+}
+// flush a recorder and return everything recorded so far as one file
+function snapshot(r){
+  return new Promise(res=>{
+    const done=()=>res(new Blob(r.chunks,{type:mime}));
+    if(r.rec.state!=='recording') return done();
+    const to=setTimeout(done,1500);
+    r.flushWaiters.push(()=>{ clearTimeout(to); done(); });
+    try{ r.rec.requestData(); }catch(e){ clearTimeout(to); done(); }
+  });
+}
+async function cutClip(tg, pre){
+  const tEnd=recNow();
+  const live=clipRecs.filter(r=>!r.done && r.rec.state==='recording' && r.chunks.length);
+  if(!live.length){ tg.failed=true; renderListA(); return toast('Buffer still starting – try again in a second'); }
+  // newest recorder that already covers the wanted start; otherwise the oldest one (start of the match)
+  const r = live.filter(x=>x.start<=tg.t-pre).sort((a,b)=>b.start-a.start)[0] || live.sort((a,b)=>a.start-b.start)[0];
+  const blob=await snapshot(r);
+  clips[tg.id]={blob, inPt:Math.max(0,tg.t-pre-r.start), outPt:Math.max(0.5,tEnd-r.start), mime, ext};
+  tg.ready=true; renderListA();
+  if($('autoSend').checked) shareTag(tg.id);
+}
+
+function addTag(td, btn){
+  if(btn){ btn.classList.add('flash'); setTimeout(()=>btn.classList.remove('flash'),150); }
+  if(!recording) return toast('Start recording to tag');
+  const t=recNow();
+  const tg={id:uid(), name:td.name, color:td.color, t, pre:td.pre, post:td.post, ready:false, sent:false};
+  tags.push(tg);
+  renderListA();
+  broadcast({type:'tag', tag:meta(tg)});
+  if(td.post>0) setTimeout(()=>recording && cutClip(tg, td.pre), td.post*1000);
+  else cutClip(tg, td.pre);
+}
+const meta = tg => ({id:tg.id, name:tg.name, color:tg.color, t:tg.t, pre:tg.pre, post:tg.post, ready:tg.ready});
+
+function renderListA(){
+  const L=$('listA');
+  L.innerHTML = tags.length ? '' : '<div class="mut" style="padding:12px">Tags appear here.</div>';
+  [...tags].reverse().forEach(tg=>{
+    const d=document.createElement('div'); d.className='item';
+    const st = tg.sent ? '<span class="pill sent">sent</span>' : tg.ready ? '<span class="pill ok">clip ready</span>' : tg.failed ? '<span class="pill">no clip</span>' : `<span class="pill wait">${tg.post?'+'+tg.post+'s…':'cutting…'}</span>`;
+    d.innerHTML=`<div class="sw" style="background:${tg.color}"></div><div class="t">${fmt(tg.t)}</div><div class="n">${tg.name} <span class="mut">${tg.pre}s</span></div>${st}
+      <button class="ib" title="Send to bench" data-a="send">➤</button><button class="ib" title="Download clip" data-a="dl">⬇</button><button class="ib" title="Delete" data-a="del">✕</button>`;
+    d.onclick=e=>{
+      const a=e.target.dataset.a;
+      if(a==='send'){ if(!tg.ready) return toast('Clip still recording'); shareTag(tg.id, true); }
+      if(a==='dl'){ const c=clips[tg.id]; if(c) download(c.blob, `${fmt(tg.t).replace(':','-')}_${tg.name}.${c.ext}`); else toast('Clip still recording'); }
+      if(a==='del'){ tags.splice(tags.indexOf(tg),1); delete clips[tg.id]; broadcast({type:'del', id:tg.id}); renderListA(); }
+    };
+    L.appendChild(d);
+  });
+}
+renderListA();
+
+/* ---------- sharing (analyst = host) ---------- */
+let hostPeer=null; const conns=new Set();
+function newCode(){ const A='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<6;i++) s+=A[Math.floor(Math.random()*A.length)]; return s; }
+$('btnLive').onclick=()=>{
+  if(hostPeer){ hostPeer.destroy(); hostPeer=null; conns.clear(); updCount(); $('btnLive').textContent='Go live'; $('btnLive').className='b go'; $('roomCode').textContent='––––––'; setNet('', 'Not connected'); return; }
+  if(typeof Peer==='undefined') return toast('No internet connection (sharing library did not load)');
+  goLive(load('lt_code','') || newCode());
+};
+function goLive(code){
+  setNet('wait','Going live…');
+  hostPeer=new Peer(PEER_PREFIX+code, {debug:1});
+  hostPeer.on('open',()=>{ save('lt_code',code); $('roomCode').textContent=code; setNet('ok','Live – waiting for bench'); $('btnLive').textContent='Stop sharing'; $('btnLive').className='b stop'; });
+  hostPeer.on('error',err=>{
+    console.warn(err);
+    if(err.type==='unavailable-id'){ hostPeer.destroy(); hostPeer=null; goLive(newCode()); return; }
+    if(err.type==='network'||err.type==='server-error'||err.type==='socket-error') setNet('bad','Internet problem – retrying');
+  });
+  hostPeer.on('disconnected',()=>{ setNet('wait','Reconnecting…'); setTimeout(()=>hostPeer && !hostPeer.destroyed && hostPeer.reconnect(),2000); });
+  hostPeer.on('connection',conn=>{
+    conn.on('open',()=>{
+      conns.add(conn); updCount(); toast('Bench device connected');
+      conn.send({type:'hello', tags:tags.map(meta), defs:tagDefs});
+    });
+    conn.on('data',async d=>{
+      if(d && d.type==='getClip' && clips[d.id]) sendClip(conn,d.id);
+    });
+    conn.on('close',()=>{ conns.delete(conn); updCount(); });
+    conn.on('error',()=>{ conns.delete(conn); updCount(); });
+  });
+}
+function updCount(){ $('benchCount').textContent='Bench devices: '+conns.size; if(hostPeer&&hostPeer.open) setNet('ok', conns.size? `Live – ${conns.size} bench device(s)` : 'Live – waiting for bench'); }
+$('btnCopy').onclick=()=>{ navigator.clipboard.writeText($('roomCode').textContent); toast('Code copied'); };
+function broadcast(msg){ conns.forEach(c=>{ try{ c.open && c.send(msg); }catch(e){} }); }
+function shareTag(id, manual){
+  const tg=tags.find(t=>t.id===id); if(!tg) return;
+  if(!conns.size){ if(manual) toast('No bench device connected'); return; }
+  broadcast({type:'tag', tag:meta(tg)});
+  conns.forEach(c=>sendClip(c,id));
+  tg.sent=true; renderListA();
+}
+const sendQ=new WeakMap();
+function sendClip(conn,id){
+  const prev=sendQ.get(conn)||Promise.resolve();
+  const p=prev.then(async()=>{
+    const c=clips[id]; if(!c||!conn.open) return;
+    const buf=await c.blob.arrayBuffer(); const n=Math.ceil(buf.byteLength/CHUNK);
+    conn.send({type:'clipStart', id, n, size:buf.byteLength, mime:c.mime, ext:c.ext, inPt:c.inPt, outPt:c.outPt});
+    for(let i=0;i<n;i++){
+      while(conn.dataChannel && conn.dataChannel.bufferedAmount>1_500_000) await sleep(30);
+      if(!conn.open) return;
+      conn.send({type:'chunk', id, i, data:buf.slice(i*CHUNK,(i+1)*CHUNK)});
+    }
+    conn.send({type:'clipEnd', id});
+  }).catch(e=>console.error(e));
+  sendQ.set(conn,p); return p;
+}
+
+/* ======================== BENCH ======================== */
+let benchPeer=null, benchConn=null, benchCode='', wantConnected=false;
+const bTags=[]; const bClips={}; const incoming={};
+let filter=null, curId=null, stopAt=null;
+
+$('codeIn').value=load('lt_bcode','');
+$('btnJoin').onclick=()=>{
+  if(wantConnected){ wantConnected=false; benchConn&&benchConn.close(); benchPeer&&benchPeer.destroy(); benchPeer=null; setNet('','Not connected'); $('btnJoin').textContent='Connect'; $('btnJoin').className='b go'; return; }
+  const code=$('codeIn').value.trim().toUpperCase(); if(code.length<6) return toast('Enter the 6-letter code');
+  if(typeof Peer==='undefined') return toast('No internet connection (sharing library did not load)');
+  benchCode=code; save('lt_bcode',code); wantConnected=true;
+  $('btnJoin').textContent='Disconnect'; $('btnJoin').className='b stop';
+  benchConnect();
+};
+function benchConnect(){
+  if(!wantConnected) return;
+  setNet('wait','Connecting…');
+  if(!benchPeer || benchPeer.destroyed){
+    benchPeer=new Peer({debug:1});
+    benchPeer.on('open',()=>dial());
+    benchPeer.on('error',err=>{ console.warn(err); if(err.type==='peer-unavailable') setNet('bad','Analyst not live – retrying'); else setNet('bad','Connection problem – retrying'); setTimeout(()=>{ if(wantConnected && !(benchConn&&benchConn.open)) dial(); },4000); });
+    benchPeer.on('disconnected',()=>{ setTimeout(()=>benchPeer && !benchPeer.destroyed && benchPeer.reconnect(),2000); });
+  } else dial();
+}
+function dial(){
+  if(!wantConnected || !benchPeer || !benchPeer.open) return;
+  if(benchConn && benchConn.open) return;
+  benchConn=benchPeer.connect(PEER_PREFIX+benchCode,{reliable:true});
+  benchConn.on('open',()=>{ setNet('ok','Connected to analyst'); toast('Connected'); });
+  benchConn.on('data',onBenchData);
+  benchConn.on('close',()=>{ if(wantConnected){ setNet('wait','Lost connection – retrying'); setTimeout(dial,3000);} });
+}
+function onBenchData(d){
+  if(!d||!d.type) return;
+  if(d.type==='hello'){
+    d.tags.forEach(t=>{ if(!bTags.find(x=>x.id===t.id)) bTags.push({...t, have:false}); });
+    renderListB();
+  }
+  else if(d.type==='tag'){
+    let t=bTags.find(x=>x.id===d.tag.id);
+    if(!t){ t={...d.tag, have:false}; bTags.push(t); toast('New tag: '+t.name); } else Object.assign(t,d.tag);
+    renderListB();
+  }
+  else if(d.type==='del'){ const i=bTags.findIndex(x=>x.id===d.id); if(i>=0) bTags.splice(i,1); delete bClips[d.id]; renderListB(); }
+  else if(d.type==='clipStart'){ incoming[d.id]={...d, parts:new Array(d.n), got:0}; renderListB(); }
+  else if(d.type==='chunk'){
+    const inc=incoming[d.id]; if(!inc) return;
+    if(!inc.parts[d.i]){ inc.parts[d.i]=d.data; inc.got++; }
+    if(inc.got%20===0) renderListB();
+  }
+  else if(d.type==='clipEnd'){
+    const inc=incoming[d.id]; if(!inc) return; delete incoming[d.id];
+    if(inc.got<inc.n){ benchConn.send({type:'getClip', id:d.id}); return; }
+    const blob=new Blob(inc.parts,{type:inc.mime});
+    if(bClips[d.id]) URL.revokeObjectURL(bClips[d.id].url);
+    bClips[d.id]={blob, url:URL.createObjectURL(blob), inPt:inc.inPt, outPt:inc.outPt, ext:inc.ext};
+    const t=bTags.find(x=>x.id===d.id); if(t) t.have=true;
+    renderListB();
+    if($('autoPlay').checked && (!curId || $('player').paused)) playClip(d.id);
+  }
+}
+function renderListB(){
+  const names=[...new Set(bTags.map(t=>t.name))];
+  $('filtB').innerHTML = `<button class="${filter?'':'on'}" data-f="">All (${bTags.length})</button>` +
+    names.map(n=>`<button class="${filter===n?'on':''}" data-f="${n}">${n} (${bTags.filter(t=>t.name===n).length})</button>`).join('');
+  $('filtB').querySelectorAll('button').forEach(b=>b.onclick=()=>{ filter=b.dataset.f||null; renderListB(); });
+  const L=$('itemsB'); L.innerHTML='';
+  const shown=visibleB();
+  if(!shown.length) L.innerHTML='<div class="mut" style="padding:12px">Tags from the analyst appear here.</div>';
+  [...shown].reverse().forEach(t=>{
+    const inc=incoming[t.id];
+    const st = t.have ? '<span class="pill ok">▶ ready</span>' : inc ? `<span class="pill wait">receiving ${Math.round(100*inc.got/inc.n)}%</span>` : t.ready ? '<span class="pill">tap to get</span>' : '<span class="pill wait">cutting…</span>';
+    const d=document.createElement('div'); d.className='item'+(t.id===curId?' sel':'');
+    d.innerHTML=`<div class="sw" style="background:${t.color}"></div><div class="t">${fmt(t.t)}</div><div class="n">${t.name}${t.pre?` <span class="mut">${t.pre}s</span>`:''}</div>${st}`;
+    d.onclick=()=>{ if(bClips[t.id]) playClip(t.id); else if(t.ready && benchConn&&benchConn.open && !incoming[t.id]){ benchConn.send({type:'getClip',id:t.id}); toast('Requesting clip…'); } };
+    L.appendChild(d);
+  });
+}
+const visibleB=()=>bTags.filter(t=>!filter||t.name===filter);
+
+async function playClip(id){
+  const c=bClips[id], t=bTags.find(x=>x.id===id); if(!c) return;
+  curId=id; const v=$('player');
+  $('nowPlaying').innerHTML=`<span style="color:${t.color}">■</span> ${t.name} — ${fmt(t.t)}`;
+  $('btnReplay').disabled=false; $('btnDl').disabled=false;
+  stopAt=null;
+  v.src=c.url;
+  await new Promise(r=>v.addEventListener('loadedmetadata',r,{once:true}));
+  if(!isFinite(v.duration)){ // recorder files sometimes have no duration: force it so seeking works
+    v.currentTime=1e7; await new Promise(r=>v.addEventListener('durationchange',r,{once:true})).catch(()=>{}); await sleep(50);
+  }
+  v.currentTime=c.inPt; stopAt=c.outPt;
+  try{ await v.play(); }catch(e){}
+  renderListB();
+}
+$('player').addEventListener('timeupdate',()=>{ const v=$('player'); if(stopAt!=null && v.currentTime>=stopAt){ v.pause(); stopAt=null; } });
+$('btnReplay').onclick=()=>curId&&playClip(curId);
+function step(dir){ const ids=visibleB().filter(t=>bClips[t.id]).map(t=>t.id); if(!ids.length) return; let i=ids.indexOf(curId); i = i<0 ? ids.length-1 : Math.min(ids.length-1,Math.max(0,i+dir)); playClip(ids[i]); }
+$('btnPrev').onclick=()=>step(-1); $('btnNext').onclick=()=>step(1);
+$('btnDl').onclick=()=>{ const c=bClips[curId], t=bTags.find(x=>x.id===curId); if(c) download(c.blob, `${fmt(t.t).replace(':','-')}_${t.name}.${c.ext}`); };
+
+/* ======================== common ======================== */
+function download(blob,name){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),60000); }
+function csv(list){ const rows=[['Time','Seconds','Tag']].concat(list.map(t=>[fmt(t.t),t.t.toFixed(1),t.name])); return new Blob([rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n')],{type:'text/csv'}); }
+$('csvA').onclick=()=>download(csv(tags),'tags.csv');
+$('csvB').onclick=()=>download(csv(bTags),'tags_bench.csv');
+window.addEventListener('beforeunload',e=>{ if(recording){ e.preventDefault(); e.returnValue=''; } });
+
+setMode(load('lt_mode','A'));
+$('clipQ').value=load('lt_q','2000000'); $('clipQ').onchange=()=>save('lt_q',$('clipQ').value);
+renderListB();
+(async()=>{ try{ await listDevices(); }catch(e){} })();
+</script>
+</body>
+</html>

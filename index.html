@@ -105,7 +105,7 @@
         <label class="mut">Clip quality <select id="clipQ" title="Lower = smaller clips = faster sending">
           <option value="1000000">Fast send (smaller)</option><option value="2000000" selected>Normal</option><option value="4000000">High (bigger)</option></select></label>
       </div>
-      <div class="mut" id="recInfo" style="margin-top:6px"></div>
+      <div class="row" style="margin-top:6px"><span class="mut" id="recInfo"></span><button class="b hidden" id="btnFolder" style="padding:4px 10px">Open match folder</button></div>
     </div>
   </div>
 
@@ -173,6 +173,8 @@
 </main>
 
 <div class="toast" id="toast"></div>
+<div id="banner" class="hidden" style="position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:9;background:#3d3217;color:#f5d58a;border:1px solid #8a6d1c;padding:10px 16px;border-radius:8px;max-width:720px;display:flex;gap:12px;align-items:center">
+  <span id="bannerTxt"></span><button class="ib" onclick="document.getElementById('banner').classList.add('hidden')">✕</button></div>
 
 <script>
 /* ======================== helpers ======================== */
@@ -228,7 +230,9 @@ $('tabB').onclick = ()=>setMode('B');
 let tagDefs = loadTags();
 let stream=null, clipStream=null, mime='', ext='webm';
 let mainRec=null, writable=null, writeQ=Promise.resolve(), memChunks=[];
-let recT0=0, recording=false, timerInt=null, cycleInt=null;
+let recWall=0, recording=false, timerInt=null, cycleInt=null;
+const LT = window.lt || null;   // present only in the LiveTag Mac app
+let sessionDir='';
 let clipRecs=[];          // rolling clip recorders
 const tags=[];            // {id,name,color,t,ready,sent}
 const clips={};           // id -> {blob,inPt,outPt,mime,ext}
@@ -240,7 +244,7 @@ function pickMime(){
   for(const m of list) if(window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
   return '';
 }
-const recNow = () => recording ? (performance.now()-recT0)/1000 : 0;
+const recNow = () => recording ? (Date.now()-recWall)/1000 : 0;   // match time (continues across a crash restart)
 
 function renderTagGrid(){
   const g=$('tagGrid'); g.innerHTML='';
@@ -291,7 +295,8 @@ async function listDevices(){
 }
 navigator.mediaDevices?.addEventListener?.('devicechange', listDevices);
 
-$('btnCam').onclick = async ()=>{
+$('btnCam').onclick = ()=>openCamera();
+async function openCamera(){
   if(recording) return toast('Stop recording first');
   try{
     if(stream) stream.getTracks().forEach(t=>t.stop());
@@ -312,36 +317,50 @@ $('btnCam').onclick = async ()=>{
     if(!mime){ toast('This browser cannot record video. Use Google Chrome.'); return; }
     $('btnRec').disabled=false;
     $('recInfo').textContent=`Recording format: ${mime.split(';')[0]}`;
-  }catch(err){ toast('Camera error: '+err.message); console.error(err); }
-};
+    save('lt_cam',vId); save('lt_mic',aId);
+    return true;
+  }catch(err){ toast('Camera error: '+err.message); console.error(err); return false; }
+}
 
 $('btnRec').onclick = ()=> recording ? stopRecording() : startRecording();
 
-async function startRecording(){
+async function startRecording(resume){
   if(!stream) return;
-  writable=null; memChunks=[]; writeQ=Promise.resolve();
-  if($('saveFull').checked && window.showSaveFilePicker){
-    try{
-      const d=new Date(), name=`Match_${d.toISOString().slice(0,16).replace(/[:T]/g,'-')}.${ext}`;
-      const h=await showSaveFilePicker({suggestedName:name, types:[{description:'Video',accept:{[mime.split(';')[0]]:['.'+ext]}}]});
-      writable=await h.createWritable();
-    }catch(e){ if(e.name==='AbortError') return; console.warn(e); }
+  writable=null; writeQ=Promise.resolve();
+  if(LT){
+    // Mac app: the full match is appended straight to a real file on disk – nothing is lost if anything crashes
+    if(resume){ recWall=resume.recWall; const r=await LT.resumeSession(); sessionDir=r.dir; }
+    else { recWall=Date.now(); const r=await LT.startSession({ext, recWall, camId:$('camSel').value, micId:$('micSel').value, saveFull:$('saveFull').checked}); sessionDir=r.dir; }
+  } else {
+    recWall=Date.now();
+    if($('saveFull').checked && window.showSaveFilePicker){
+      try{
+        const d=new Date(), name=`Match_${d.toISOString().slice(0,16).replace(/[:T]/g,'-')}.${ext}`;
+        const h=await showSaveFilePicker({suggestedName:name, types:[{description:'Video',accept:{[mime.split(';')[0]]:['.'+ext]}}]});
+        writable=await h.createWritable();
+      }catch(e){ if(e.name==='AbortError') return; console.warn(e); }
+    }
   }
   mainRec=new MediaRecorder(stream,{mimeType:mime, videoBitsPerSecond:8e6, audioBitsPerSecond:128000});
   mainRec.ondataavailable=e=>{
     if(!e.data.size) return;
-    if(writable){ const d=e.data; writeQ=writeQ.then(()=>writable.write(d)).catch(err=>console.error(err)); }
-    else if($('saveFull').checked) memChunks.push(e.data);
+    const d=e.data;
+    if(LT){ if($('saveFull').checked) writeQ=writeQ.then(()=>d.arrayBuffer()).then(b=>LT.writeChunk(b)).catch(err=>console.error(err)); }
+    else if(writable) writeQ=writeQ.then(()=>writable.write(d)).catch(err=>console.error(err));
+    // never keep the full match in memory: a 90-minute match does not fit in a browser page
   };
   mainRec.start(2000); keepAwake();
-  recT0=performance.now(); recording=true;
+  recording=true;
   $('btnRec').textContent='■ Stop recording'; $('btnRec').className='b stop';
   $('timer').classList.add('rec');
   timerInt=setInterval(()=>$('timer').textContent=fmt(recNow()),250);
   spawnClipRec(); cycleInt=setInterval(spawnClipRec, PERIOD*1000); updBufInfo();
-  $('recInfo').textContent = writable ? 'Full match is being written to disk as you record.' :
-     ($('saveFull').checked ? 'Full match kept in memory and downloaded when you stop.' : 'Full match is not saved (clips only).');
+  if(LT){ $('recInfo').textContent=`Saving to ${prettyDir(sessionDir)}`+($('saveFull').checked?'':' (clips only)'); $('btnFolder').classList.remove('hidden'); }
+  else $('recInfo').textContent = writable ? 'Full match is being written to disk. For long matches the Mac app is safer.' :
+     'Full match NOT saved in the browser version (clips only). Use the LiveTag Mac app to record full matches.';
 }
+const prettyDir = d => d.replace(/^\/Users\/[^/]+\//,'~/');
+$('btnFolder').onclick=()=>LT && LT.openPath(sessionDir);
 
 async function stopRecording(){
   recording=false;
@@ -350,8 +369,9 @@ async function stopRecording(){
   $('btnRec').textContent='● Start recording'; $('btnRec').className='b go'; updBufInfo();
   clipRecs.slice().forEach(r=>{ clearTimeout(r.timer); if(r.rec.state!=='inactive') r.rec.stop(); });
   await new Promise(res=>{ mainRec.onstop=res; mainRec.stop(); });
-  if(writable){ await writeQ; await writable.close(); writable=null; toast('Full match saved'); }
-  else if(memChunks.length){ download(new Blob(memChunks,{type:mime}), `Match.${ext}`); memChunks=[]; }
+  await writeQ;
+  if(LT){ await LT.endSession(); toast('Match saved'); $('recInfo').textContent=`Saved in ${prettyDir(sessionDir)}`; }
+  else if(writable){ await writable.close(); writable=null; toast('Full match saved'); }
 }
 
 /* ===== Instant replay buffer =====
@@ -393,8 +413,12 @@ async function cutClip(tg, pre){
   // newest recorder that already covers the wanted start; otherwise the oldest one (start of the match)
   const r = live.filter(x=>x.start<=tg.t-pre).sort((a,b)=>b.start-a.start)[0] || live.sort((a,b)=>a.start-b.start)[0];
   const blob=await snapshot(r);
-  clips[tg.id]={blob, inPt:Math.max(0,tg.t-pre-r.start), outPt:Math.max(0.5,tEnd-r.start), mime, ext};
-  tg.ready=true; renderListA();
+  const c={blob, inPt:Math.max(0,tg.t-pre-r.start), outPt:Math.max(0.5,tEnd-r.start), mime, ext};
+  if(LT){
+    try{ c.path=await LT.saveClip(`${fmt(tg.t).replace(':','-')}_${tg.name}.${ext}`, await blob.arrayBuffer()); c.blob=null; }catch(e){ console.error(e); }
+  }
+  clips[tg.id]=c; trimClipMemory();
+  tg.ready=true; renderListA(); persistTags();
   if($('autoSend').checked) shareTag(tg.id);
 }
 
@@ -404,11 +428,21 @@ function addTag(td, btn){
   const t=recNow();
   const tg={id:uid(), name:td.name, color:td.color, t, pre:td.pre, post:td.post, ready:false, sent:false};
   tags.push(tg);
-  renderListA();
+  renderListA(); persistTags();
   broadcast({type:'tag', tag:meta(tg)});
   if(td.post>0) setTimeout(()=>recording && cutClip(tg, td.pre), td.post*1000);
   else cutClip(tg, td.pre);
 }
+// keep memory flat: in the app clips live on disk; in the browser only the newest 40 stay in memory
+function trimClipMemory(){
+  const inMem=tags.filter(t=>clips[t.id]&&clips[t.id].blob);
+  inMem.slice(0, Math.max(0,inMem.length-40)).forEach(t=>{ if(!clips[t.id].path) delete clips[t.id]; else clips[t.id].blob=null; });
+}
+function persistTags(){
+  if(!LT || !sessionDir) return;
+  LT.saveTags(tags.map(t=>({...meta(t), path:clips[t.id]&&clips[t.id].path||null, inPt:clips[t.id]?.inPt, outPt:clips[t.id]?.outPt, sent:t.sent})));
+}
+async function clipBuffer(c){ return c.blob ? await c.blob.arrayBuffer() : await LT.readClip(c.path); }
 const meta = tg => ({id:tg.id, name:tg.name, color:tg.color, t:tg.t, pre:tg.pre, post:tg.post, ready:tg.ready});
 
 function renderListA(){
@@ -418,12 +452,13 @@ function renderListA(){
     const d=document.createElement('div'); d.className='item';
     const st = tg.sent ? '<span class="pill sent">sent</span>' : tg.ready ? '<span class="pill ok">clip ready</span>' : tg.failed ? '<span class="pill">no clip</span>' : `<span class="pill wait">${tg.post?'+'+tg.post+'s…':'cutting…'}</span>`;
     d.innerHTML=`<div class="sw" style="background:${tg.color}"></div><div class="t">${fmt(tg.t)}</div><div class="n">${tg.name} <span class="mut">${tg.pre}s</span></div>${st}
-      <button class="ib" title="Send to bench" data-a="send">➤</button><button class="ib" title="Download clip" data-a="dl">⬇</button><button class="ib" title="Delete" data-a="del">✕</button>`;
+      <button class="ib" title="Send to bench" data-a="send">➤</button><button class="ib" title="${LT?'Show clip in Finder':'Download clip'}" data-a="dl">⬇</button><button class="ib" title="Delete" data-a="del">✕</button>`;
     d.onclick=e=>{
       const a=e.target.dataset.a;
       if(a==='send'){ if(!tg.ready) return toast('Clip still recording'); shareTag(tg.id, true); }
-      if(a==='dl'){ const c=clips[tg.id]; if(c) download(c.blob, `${fmt(tg.t).replace(':','-')}_${tg.name}.${c.ext}`); else toast('Clip still recording'); }
-      if(a==='del'){ tags.splice(tags.indexOf(tg),1); delete clips[tg.id]; broadcast({type:'del', id:tg.id}); renderListA(); }
+      if(a==='dl'){ const c=clips[tg.id]; if(!c) return toast('Clip not available');
+        if(c.path) LT.showItem(c.path); else download(c.blob, `${fmt(tg.t).replace(':','-')}_${tg.name}.${c.ext}`); }
+      if(a==='del'){ tags.splice(tags.indexOf(tg),1); delete clips[tg.id]; broadcast({type:'del', id:tg.id}); renderListA(); persistTags(); }
     };
     L.appendChild(d);
   });
@@ -447,11 +482,11 @@ let hostPeer=null, liveWanted=false, liveCode='', hostOpenedOnce=false; const co
 function newCode(){ const A='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<6;i++) s+=A[Math.floor(Math.random()*A.length)]; return s; }
 $('btnLive').onclick=()=>{
   if(liveWanted){
-    liveWanted=false; if(hostPeer) hostPeer.destroy(); hostPeer=null; conns.clear(); updCount();
+    liveWanted=false; LT&&LT.setLive(null); if(hostPeer) hostPeer.destroy(); hostPeer=null; conns.clear(); updCount();
     $('btnLive').textContent='Go live'; $('btnLive').className='b go'; $('roomCode').textContent='––––––'; setNet('', 'Not connected'); return;
   }
   if(typeof Peer==='undefined') return toast('No internet connection (sharing library did not load) – reload the page');
-  liveWanted=true; hostOpenedOnce=false; liveCode=load('lt_code','')||newCode();
+  liveWanted=true; hostOpenedOnce=false; liveCode=load('lt_code','')||newCode(); LT&&LT.setLive(liveCode);
   $('btnLive').textContent='Stop sharing'; $('btnLive').className='b stop';
   keepAwake(); goLive();
 };
@@ -510,14 +545,14 @@ function shareTag(id, manual){
   if(!conns.size){ if(manual) toast('No bench device connected'); return; }
   broadcast({type:'tag', tag:meta(tg)});
   conns.forEach(c=>sendClip(c,id));
-  tg.sent=true; renderListA();
+  tg.sent=true; renderListA(); persistTags();
 }
 const sendQ=new WeakMap();
 function sendClip(conn,id){
   const prev=sendQ.get(conn)||Promise.resolve();
   const p=prev.then(async()=>{
     const c=clips[id]; if(!c||!conn.open) return;
-    const buf=await c.blob.arrayBuffer(); const n=Math.ceil(buf.byteLength/CHUNK);
+    const buf=await clipBuffer(c); const n=Math.ceil(buf.byteLength/CHUNK);
     conn.send({type:'clipStart', id, n, size:buf.byteLength, mime:c.mime, ext:c.ext, inPt:c.inPt, outPt:c.outPt});
     for(let i=0;i<n;i++){
       while(conn.dataChannel && conn.dataChannel.bufferedAmount>1_500_000) await sleep(30);
@@ -626,8 +661,11 @@ function onBenchData(d){
     if(inc.got<inc.n){ benchConn.send({type:'getClip', id:d.id}); return; }
     const blob=new Blob(inc.parts,{type:inc.mime});
     if(bClips[d.id]) URL.revokeObjectURL(bClips[d.id].url);
-    bClips[d.id]={blob, url:URL.createObjectURL(blob), inPt:inc.inPt, outPt:inc.outPt, ext:inc.ext};
+    bClips[d.id]={blob, url:URL.createObjectURL(blob), inPt:inc.inPt, outPt:inc.outPt, ext:inc.ext, at:now()};
     const t=bTags.find(x=>x.id===d.id); if(t) t.have=true;
+    // keep the bench (iPad) light: only the newest 40 clips stay in memory, older ones re-download when tapped
+    const held=Object.entries(bClips).sort((a,b)=>a[1].at-b[1].at);
+    held.slice(0,Math.max(0,held.length-40)).forEach(([id,c])=>{ if(id===curId) return; URL.revokeObjectURL(c.url); delete bClips[id]; const x=bTags.find(y=>y.id===id); if(x) x.have=false; });
     renderListB();
     if($('autoPlay').checked && (!curId || $('player').paused)) playClip(d.id);
   }
@@ -680,6 +718,25 @@ $('csvB').onclick=()=>download(csv(bTags),'tags_bench.csv');
 window.addEventListener('beforeunload',e=>{ if(recording){ e.preventDefault(); e.returnValue=''; } });
 
 setMode(load('lt_mode','A'));
+// ---- Mac app: continue automatically after an unexpected stop ----
+(async()=>{
+  if(!LT) return;
+  const rec=await LT.getRecovery(); if(!rec) return;
+  setMode('A');
+  (rec.tags||[]).forEach(t=>{ tags.push({...t}); if(t.path) clips[t.id]={path:t.path, blob:null, inPt:t.inPt, outPt:t.outPt, mime:t.ext==='webm'?'video/webm':'video/mp4', ext:rec.ext}; });
+  renderListA();
+  const stoppedAt=fmt((rec.lastAlive-rec.recWall)/1000);
+  $('bannerTxt').textContent=`LiveTag stopped unexpectedly at ${stoppedAt}. Everything up to then is saved. Restarting camera and recording (part ${rec.part+1})…`;
+  $('banner').classList.remove('hidden');
+  await listDevices();
+  if(rec.camId) $('camSel').value=rec.camId; if(rec.micId!=null) $('micSel').value=rec.micId;
+  $('saveFull').checked=rec.saveFull!==false;
+  if(await openCamera()){
+    await startRecording(rec);
+    $('bannerTxt').textContent=`LiveTag stopped unexpectedly at ${stoppedAt}. Part ${rec.part} is saved – recording continues in part ${rec.part+1}. Your tags are kept.`;
+  } else $('bannerTxt').textContent=`LiveTag stopped at ${stoppedAt}. Part ${rec.part} is saved. Click "Open camera" and "Start recording" to continue.`;
+  if(rec.live){ save('lt_code',rec.live); $('btnLive').click(); }
+})();
 (function(){ let t={}; try{ t=JSON.parse(load('lt_turn','{}'))||{}; }catch(e){}
   $('turnUrl').value=t.url||''; $('turnUser').value=t.user||''; $('turnPass').value=t.pass||''; })();
 $('btnSet').onclick=()=>$('setCard').classList.toggle('hidden');

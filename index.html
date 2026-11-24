@@ -215,7 +215,17 @@ function save(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
 
 /* ======================== tabs ======================== */
 let mode = 'A';
+// Edition: 'analyst' (Mac app), 'bench' (iPad app) or 'both' (website)
+const EDITION = window.LT_EDITION || (window.lt && window.lt.edition) || 'both';
+if(EDITION!=='both'){
+  document.querySelector('.tabs').classList.add('hidden');
+  const tag=document.createElement('span'); tag.className='pill '+(EDITION==='analyst'?'ok':'sent');
+  tag.textContent=EDITION==='analyst'?'ANALYST':'BENCH'; tag.style.fontWeight='700'; tag.style.letterSpacing='1px';
+  document.querySelector('header h1').after(tag);
+  document.title = EDITION==='analyst' ? 'LiveTag Analyst' : 'LiveTag Bench';
+}
 function setMode(m){
+  if(EDITION==='analyst') m='A'; else if(EDITION==='bench') m='B';
   mode = m;
   $('viewA').classList.toggle('hidden', m!=='A');
   $('viewB').classList.toggle('hidden', m!=='B');
@@ -718,6 +728,7 @@ $('csvB').onclick=()=>download(csv(bTags),'tags_bench.csv');
 window.addEventListener('beforeunload',e=>{ if(recording){ e.preventDefault(); e.returnValue=''; } });
 
 setMode(load('lt_mode','A'));
+if(window.Capacitor){ $('btnDl').classList.add('hidden'); $('csvB').classList.add('hidden'); }
 // ---- Mac app: continue automatically after an unexpected stop ----
 (async()=>{
   if(!LT) return;
